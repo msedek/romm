@@ -142,6 +142,11 @@ export default defineConfig(({ mode }) => {
           changeOrigin: false,
           rewrite: (path) => path.replace(/^\/openapi.json/, "/openapi.json"),
         },
+        "/assets/romm": {
+          target: `http://127.0.0.1:${backendPort}`,
+          changeOrigin: false,
+          secure: false,
+        },
       },
       port: httpsMode ? 8443 : 3000,
       allowedHosts: ["localhost", "127.0.0.1", "romm.dev"],
