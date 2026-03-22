@@ -313,7 +313,7 @@ function resetGallery() {
 }
 
 async function fetchRoms() {
-  romsStore.setLimit(500);
+  romsStore.setLimit(2000);
   romsStore.setOrderBy("name");
   romsStore.setOrderDir("asc");
   romsStore.resetPagination();
