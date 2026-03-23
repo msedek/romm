@@ -61,9 +61,10 @@ const rowCount = computed(() =>
   Math.ceil(filteredRoms.value.length / columns.value),
 );
 
+const ROW_HEIGHT = 280;
 const virtualizer = useWindowVirtualizer({
   get count() { return rowCount.value; },
-  estimateSize: () => 350,
+  estimateSize: () => ROW_HEIGHT,
   overscan: 5,
 });
 
@@ -262,7 +263,7 @@ onBeforeRouteUpdate(async (to, from) => {
         <div
           v-if="currentView != 2"
           :style="{ height: `${virtualizer.getTotalSize()}px`, width: '100%', position: 'relative' }"
-          class="mx-1 my-3 mr-14"
+          class="mx-1 my-3"
         >
           <div
             v-for="virtualRow in virtualizer.getVirtualItems()"
