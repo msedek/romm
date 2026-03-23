@@ -49,20 +49,6 @@ export const ROUTES = {
 
 const routes = [
   {
-    path: "/setup",
-    component: () => import("@/layouts/Auth.vue"),
-    children: [
-      {
-        path: "",
-        name: ROUTES.SETUP,
-        meta: {
-          title: i18n.global.t("login.setup-wizard"),
-        },
-        component: () => import("@/views/Auth/Setup.vue"),
-      },
-    ],
-  },
-  {
     path: "/login",
     component: () => import("@/layouts/Auth.vue"),
     children: [
@@ -76,34 +62,10 @@ const routes = [
       },
     ],
   },
-  {
-    path: "/reset-password",
-    component: () => import("@/layouts/Auth.vue"),
-    children: [
-      {
-        path: "",
-        name: ROUTES.RESET_PASSWORD,
-        meta: {
-          title: i18n.global.t("login.reset-password"),
-        },
-        component: () => import("@/views/Auth/ResetPassword.vue"),
-      },
-    ],
-  },
-  {
-    path: "/register",
-    component: () => import("@/layouts/Auth.vue"),
-    children: [
-      {
-        path: "",
-        name: ROUTES.REGISTER,
-        meta: {
-          title: i18n.global.t("login.register"),
-        },
-        component: () => import("@/views/Auth/Register.vue"),
-      },
-    ],
-  },
+  // Redirect removed auth routes to login (which auto-redirects to Google OIDC)
+  { path: "/setup", redirect: "/login" },
+  { path: "/reset-password", redirect: "/login" },
+  { path: "/register", redirect: "/login" },
   {
     path: "/",
     name: ROUTES.MAIN,
@@ -335,12 +297,9 @@ const routePermissions: RoutePermissions[] = [
 ];
 
 function checkRoutePermissions(route: string, user: User | null): boolean {
-  // No checks needed for login and setup pages
+  // No checks needed for login and pair pages
   if (
     route === ROUTES.LOGIN ||
-    route === ROUTES.SETUP ||
-    route === ROUTES.RESET_PASSWORD ||
-    route === ROUTES.REGISTER ||
     route === ROUTES.PAIR
   )
     return true;
@@ -365,22 +324,8 @@ router.beforeEach(async (to, _from, next) => {
   const currentRoute = to.name?.toString();
 
   try {
-    // Handle setup wizard
+    // Setup wizard disabled — Google OIDC is the sole auth method
     if (heartbeat.value.SYSTEM.SHOW_SETUP_WIZARD) {
-      return currentRoute !== "setup" ? next({ name: ROUTES.SETUP }) : next();
-    }
-
-    // Auth bypassed: auth is handled at infrastructure level (Cloudflare tunnel).
-    // Redirect login/register/reset routes to home.
-    if (
-      currentRoute === ROUTES.LOGIN ||
-      currentRoute === ROUTES.RESET_PASSWORD ||
-      currentRoute === ROUTES.REGISTER
-    ) {
-      return next({ name: ROUTES.HOME });
-    }
-
-    if (user.value && currentRoute == ROUTES.SETUP) {
       return next({ name: ROUTES.HOME });
     }
 
