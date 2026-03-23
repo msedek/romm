@@ -370,28 +370,22 @@ router.beforeEach(async (to, _from, next) => {
       return currentRoute !== "setup" ? next({ name: ROUTES.SETUP }) : next();
     }
 
-    // Handle authentication
+    // Auth bypassed: auth is handled at infrastructure level (Cloudflare tunnel).
+    // Redirect login/register/reset routes to home.
     if (
-      !user.value &&
-      currentRoute !== ROUTES.LOGIN &&
-      currentRoute !== ROUTES.RESET_PASSWORD &&
-      currentRoute !== ROUTES.REGISTER &&
-      currentRoute !== ROUTES.PAIR
+      currentRoute === ROUTES.LOGIN ||
+      currentRoute === ROUTES.RESET_PASSWORD ||
+      currentRoute === ROUTES.REGISTER
     ) {
-      return next({
-        name: ROUTES.LOGIN,
-        query: {
-          next: to.query.next ?? (to.path !== "/login" ? to.path : "/"),
-        },
-      });
+      return next({ name: ROUTES.HOME });
     }
 
     if (user.value && currentRoute == ROUTES.SETUP) {
       return next({ name: ROUTES.HOME });
     }
 
-    // Check permissions
-    if (currentRoute && !checkRoutePermissions(currentRoute, user.value)) {
+    // Check permissions (skip if no user since auth is external)
+    if (user.value && currentRoute && !checkRoutePermissions(currentRoute, user.value)) {
       return next({ name: ROUTES.NOT_FOUND });
     }
 
@@ -404,7 +398,7 @@ router.beforeEach(async (to, _from, next) => {
   } catch (error) {
     console.error("Navigation guard error:", error);
     document.title = "RomM";
-    next({ name: ROUTES.LOGIN });
+    next();
   }
 });
 
