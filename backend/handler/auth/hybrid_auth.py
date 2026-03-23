@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+from fastapi.security.http import HTTPBasic
 from starlette.authentication import AuthCredentials, AuthenticationBackend
 from starlette.requests import HTTPConnection
 
@@ -25,6 +26,21 @@ class HybridAuthBackend(AuthenticationBackend):
         # Check if Authorization header exists
         if "Authorization" in conn.headers:
             scheme, token = conn.headers["Authorization"].split()
+
+            # Check if basic auth header is valid
+            if scheme.lower() == "basic":
+                credentials = await HTTPBasic().__call__(conn)  # type: ignore[arg-type]
+                if not credentials:
+                    return None
+
+                user = auth_handler.authenticate_user(
+                    credentials.username, credentials.password
+                )
+                if user is None or not user.enabled:
+                    return None
+
+                user.set_last_active()
+                return (AuthCredentials(user.oauth_scopes), user)
 
             # Check if bearer auth header is valid
             if scheme.lower() == "bearer":
