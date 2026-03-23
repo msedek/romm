@@ -147,8 +147,13 @@ export default defineConfig(({ mode }) => {
           changeOrigin: false,
           secure: false,
         },
+        "/assets/emulatorjs": {
+          target: `http://127.0.0.1:${backendPort}`,
+          changeOrigin: false,
+          secure: false,
+        },
       },
-      port: httpsMode ? 8443 : 3000,
+      port: httpsMode ? 8443 : parseInt(env.VITE_PORT ?? "3100"),
       allowedHosts: ["localhost", "127.0.0.1", "romm.dev"],
       ...(httpsMode
         ? {
