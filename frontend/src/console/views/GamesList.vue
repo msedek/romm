@@ -313,7 +313,7 @@ function resetGallery() {
 }
 
 async function fetchRoms() {
-  romsStore.setLimit(500);
+  romsStore.setLimit(2000);
   romsStore.setOrderBy("name");
   romsStore.setOrderDir("asc");
   romsStore.resetPagination();
@@ -495,7 +495,7 @@ function handleItemDeselected() {
         </div>
         <div
           ref="game-grid-ref"
-          class="grid grid-cols-[repeat(auto-fill,minmax(250px,250px))] justify-center my-12 gap-5 px-13 md:px-16 lg:px-20 xl:px-28 py-8 relative z-10 w-full box-border overflow-x-hidden"
+          class="console-game-grid grid grid-cols-[repeat(auto-fill,minmax(250px,250px))] justify-center my-12 gap-5 px-13 md:px-16 lg:px-20 xl:px-28 py-8 relative z-10 w-full box-border overflow-x-hidden"
           @wheel.prevent
         >
           <GameCard
@@ -554,5 +554,13 @@ function handleItemDeselected() {
 <style scoped>
 button:focus {
   outline: none;
+}
+
+/* Virtual rendering: browser skips paint/layout for off-screen cards.
+   Each grid child gets content-visibility so the browser only renders
+   cards near the viewport. DOM stays complete for spatial navigation. */
+.console-game-grid > :deep(*) {
+  content-visibility: auto;
+  contain-intrinsic-size: 250px 370px;
 }
 </style>
