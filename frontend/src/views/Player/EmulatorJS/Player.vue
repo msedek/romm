@@ -119,7 +119,10 @@ declare global {
   }
 }
 
-const supportedCores = getSupportedEJSCores(romRef.value.platform_slug);
+// Use platform_fs_slug (e.g. "cps1") for core lookup if it has dedicated cores,
+// otherwise fall back to platform_slug (e.g. "arcade")
+const fsCores = getSupportedEJSCores(romRef.value.platform_fs_slug);
+const supportedCores = fsCores.length > 0 ? fsCores : getSupportedEJSCores(romRef.value.platform_slug);
 window.EJS_core =
   supportedCores.find((core) => core === props.core) ?? supportedCores[0];
 window.EJS_controlScheme = getControlSchemeForPlatform(

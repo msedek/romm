@@ -176,7 +176,9 @@ onMounted(async () => {
   });
   firmwareOptions.value = firmwareResponse.data;
 
-  supportedCores.value = [...getSupportedEJSCores(rom.value.platform_slug)];
+  // Use platform_fs_slug for core lookup if it has dedicated cores
+  const fsCores = getSupportedEJSCores(rom.value.platform_fs_slug);
+  supportedCores.value = fsCores.length > 0 ? [...fsCores] : [...getSupportedEJSCores(rom.value.platform_slug)];
 
   // Listen for save/state selection from dialogs
   emitter?.on("saveSelected", selectSave);
