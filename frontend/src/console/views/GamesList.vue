@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useVirtualizer } from "@tanstack/vue-virtual";
 import { storeToRefs } from "pinia";
 import {
   computed,
@@ -17,7 +18,6 @@ import NavigationHint from "@/console/components/NavigationHint.vue";
 import useBackgroundArt from "@/console/composables/useBackgroundArt";
 import { gamesListElementRegistry } from "@/console/composables/useElementRegistry";
 import { useInputScope } from "@/console/composables/useInputScope";
-import { useRovingDom } from "@/console/composables/useRovingDom";
 import { useSpatialNav } from "@/console/composables/useSpatialNav";
 import type { InputAction } from "@/console/input/actions";
 import { ROUTES } from "@/plugins/router";
@@ -59,7 +59,124 @@ const selectedIndex = ref(0);
 const loadedMap = ref<Record<number, boolean>>({});
 const inAlphabet = ref(false);
 const alphaIndex = ref(0);
-const gridRef = useTemplateRef<HTMLDivElement>("game-grid-ref");
+
+// --- Virtual scrolling setup ---
+const scrollContainerRef = useTemplateRef<HTMLDivElement>("scroll-container-ref");
+const gridMeasureRef = useTemplateRef<HTMLDivElement>("grid-measure-ref");
+
+// Card dimensions (matching CSS: minmax(250px,250px) card + gap-5 = 20px)
+const CARD_WIDTH = 250;
+const GAP = 20;
+const ROW_HEIGHT = 370 + GAP; // card height (~350px content + border) + gap
+
+// Dynamic column count based on container width
+const columnCount = ref(4);
+
+function updateColumnCount() {
+  if (!gridMeasureRef.value) return;
+  const containerWidth = gridMeasureRef.value.clientWidth;
+  if (containerWidth <= 0) return;
+  // Match CSS: repeat(auto-fill, minmax(250px, 250px))
+  // Available width for cards = containerWidth
+  // Each card takes CARD_WIDTH, plus gaps between them
+  const cols = Math.max(1, Math.floor((containerWidth + GAP) / (CARD_WIDTH + GAP)));
+  columnCount.value = cols;
+}
+
+// ResizeObserver for responsive column count
+let resizeObserver: ResizeObserver | null = null;
+
+// Row count for virtualizer
+const rowCount = computed(() =>
+  Math.ceil(filteredRoms.value.length / columnCount.value),
+);
+
+// Group roms into rows
+function getRowItems(rowIndex: number): { rom: SimpleRom; flatIndex: number }[] {
+  const cols = columnCount.value;
+  const start = rowIndex * cols;
+  const end = Math.min(start + cols, filteredRoms.value.length);
+  const items: { rom: SimpleRom; flatIndex: number }[] = [];
+  for (let i = start; i < end; i++) {
+    items.push({ rom: filteredRoms.value[i], flatIndex: i });
+  }
+  return items;
+}
+
+// Virtualizer instance
+const virtualizer = useVirtualizer(
+  computed(() => ({
+    count: rowCount.value,
+    getScrollElement: () => scrollContainerRef.value ?? null,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 3,
+  })),
+);
+
+// Helper: get column count for spatial nav (getCols)
+function getCols(): number {
+  return columnCount.value;
+}
+
+// --- Scroll-to-row + focus logic ---
+// When selectedIndex changes, ensure the target row is visible and focused.
+// This replaces useRovingDom for the virtual scroll case.
+function rowForIndex(idx: number): number {
+  return Math.floor(idx / columnCount.value);
+}
+
+/**
+ * Scroll to make the row containing `idx` visible, then focus the element.
+ * If `instant` is true, use instant scroll (for initial load). Otherwise smooth.
+ */
+async function scrollToAndFocus(idx: number, behavior: ScrollBehavior = "smooth") {
+  const row = rowForIndex(idx);
+
+  // Tell virtualizer to scroll to this row
+  virtualizer.value.scrollToIndex(row, { align: "center", behavior });
+
+  // Wait for the DOM to render the target row
+  await nextTick();
+  // Additional frame wait for virtualizer to process scroll
+  await new Promise((r) => requestAnimationFrame(r));
+  await nextTick();
+
+  const el = gamesListElementRegistry.getElement(idx);
+  if (el) {
+    el.setAttribute("tabindex", "0");
+    el.focus({ preventScroll: true });
+  } else {
+    // Element not yet rendered — retry once after another frame
+    await new Promise((r) => requestAnimationFrame(r));
+    await nextTick();
+    const el2 = gamesListElementRegistry.getElement(idx);
+    if (el2) {
+      el2.setAttribute("tabindex", "0");
+      el2.focus({ preventScroll: true });
+    }
+  }
+}
+
+// Watch selectedIndex to handle scroll + focus
+watch(selectedIndex, (newIdx, oldIdx) => {
+  // Remove tabindex from old element if available
+  if (oldIdx != null) {
+    const prev = gamesListElementRegistry.getElement(oldIdx);
+    if (prev) prev.setAttribute("tabindex", "-1");
+  }
+
+  // Check if element is already rendered (same virtual window)
+  const el = gamesListElementRegistry.getElement(newIdx);
+  if (el) {
+    el.setAttribute("tabindex", "0");
+    el.focus({ preventScroll: true });
+    // Still scroll to keep it centered
+    el.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+  } else {
+    // Element not in DOM — need to scroll virtualizer first
+    scrollToAndFocus(newIdx);
+  }
+});
 
 // Generate alphabet letters dynamically based on available games
 const letters = computed(() => {
@@ -135,24 +252,6 @@ const headerTitle = computed(() => {
   );
 });
 
-function getCols(): number {
-  if (!gridRef.value) return 4;
-
-  try {
-    const style = window.getComputedStyle(gridRef.value);
-    return Math.max(1, style.gridTemplateColumns.split(" ").length);
-  } catch {
-    return 4;
-  }
-}
-
-// Selected element access
-const cardElementAt = (i: number) => gamesListElementRegistry.getElement(i);
-useRovingDom(selectedIndex, (i) => cardElementAt(i), {
-  block: "center",
-  inline: "nearest",
-});
-
 const { subscribe } = useInputScope();
 const {
   moveLeft,
@@ -190,14 +289,7 @@ function handleAction(action: InputAction): boolean {
       });
       if (idx >= 0) {
         selectedIndex.value = idx;
-        // Stay in alphabet mode, just highlight the game
-        nextTick(() => {
-          cardElementAt(selectedIndex.value)?.scrollIntoView({
-            block: "center",
-            inline: "nearest",
-            behavior: "smooth" as ScrollBehavior,
-          });
-        });
+        // scrollToAndFocus is triggered by the watch on selectedIndex
       }
       return true;
     }
@@ -323,14 +415,20 @@ async function fetchRoms() {
   if (selectedIndex.value >= fetchedRoms.length) selectedIndex.value = 0;
   await nextTick();
 
-  cardElementAt(selectedIndex.value)?.scrollIntoView({
-    block: "center",
-    inline: "nearest",
-    behavior: "instant" as ScrollBehavior,
-  });
+  // After roms load, scroll to the restored selectedIndex
+  scrollToAndFocus(selectedIndex.value, "instant");
 }
 
 onMounted(async () => {
+  // Setup ResizeObserver for dynamic column count
+  if (gridMeasureRef.value) {
+    updateColumnCount();
+    resizeObserver = new ResizeObserver(() => {
+      updateColumnCount();
+    });
+    resizeObserver.observe(gridMeasureRef.value);
+  }
+
   const routePlatformId = isPlatformRoute ? Number(route.params.id) : null;
   const routeCollectionId = isCollectionRoute ? Number(route.params.id) : null;
   const routeSmartCollectionId = isSmartCollectionRoute
@@ -362,7 +460,7 @@ onMounted(async () => {
         }
       }
     },
-    { immediate: true }, // Ensure watcher is triggered immediately
+    { immediate: true },
   );
 
   watch(
@@ -374,7 +472,6 @@ onMounted(async () => {
         );
 
         if (!collection) return;
-        // Check if the current collection is different or no ROMs have been loaded
         if (
           currentCollection.value?.id !== routeCollectionId ||
           filteredRoms.value.length === 0
@@ -389,7 +486,7 @@ onMounted(async () => {
         }
       }
     },
-    { immediate: true }, // Ensure watcher is triggered immediately
+    { immediate: true },
   );
 
   watch(
@@ -401,7 +498,6 @@ onMounted(async () => {
         );
 
         if (!smartCollection) return;
-        // Check if the current smartCollection is different or no ROMs have been loaded
         if (
           currentSmartCollection.value?.id !== routeSmartCollectionId ||
           filteredRoms.value.length === 0
@@ -416,7 +512,7 @@ onMounted(async () => {
         }
       }
     },
-    { immediate: true }, // Ensure watcher is triggered immediately
+    { immediate: true },
   );
 
   watch(
@@ -429,7 +525,6 @@ onMounted(async () => {
         );
 
         if (!virtualCollection) return;
-        // Check if the current virtualCollection is different or no ROMs have been loaded
         if (
           currentVirtualCollection.value?.id !== routeVirtualCollectionId ||
           filteredRoms.value.length === 0
@@ -444,7 +539,7 @@ onMounted(async () => {
         }
       }
     },
-    { immediate: true }, // Ensure watcher is triggered immediately
+    { immediate: true },
   );
 
   off = subscribe(handleAction);
@@ -454,6 +549,10 @@ onUnmounted(() => {
   off?.();
   off = null;
   persistIndex();
+  if (resizeObserver) {
+    resizeObserver.disconnect();
+    resizeObserver = null;
+  }
 });
 
 function markLoaded(id: number) {
@@ -471,6 +570,7 @@ function handleItemDeselected() {
 
 <template>
   <div
+    ref="scroll-container-ref"
     class="relative min-h-screen overflow-y-auto overflow-x-hidden max-w-[100vw] flex"
     @wheel.prevent
   >
@@ -484,7 +584,7 @@ function handleItemDeselected() {
         class="text-center mt-8"
         :style="{ color: 'var(--console-loading-text)' }"
       >
-        Loading games…
+        Loading games...
       </div>
       <div v-else>
         <div
@@ -494,24 +594,51 @@ function handleItemDeselected() {
           No games found.
         </div>
         <div
-          ref="game-grid-ref"
-          class="console-game-grid grid grid-cols-[repeat(auto-fill,minmax(250px,250px))] justify-center my-12 gap-5 px-13 md:px-16 lg:px-20 xl:px-28 py-8 relative z-10 w-full box-border overflow-x-hidden"
-          @wheel.prevent
+          v-else
+          ref="grid-measure-ref"
+          class="my-12 px-13 md:px-16 lg:px-20 xl:px-28 py-8 relative z-10 w-full box-border overflow-x-hidden"
         >
-          <GameCard
-            v-for="(rom, i) in filteredRoms"
-            :key="rom.id"
-            :rom="rom"
-            :index="i"
-            :selected="!inAlphabet && i === selectedIndex"
-            :loaded="!!loadedMap[rom.id]"
-            registry="gamesList"
-            @click="selectAndOpen(i, rom)"
-            @focus="mouseSelect(i)"
-            @loaded="markLoaded(rom.id)"
-            @select="handleItemSelected"
-            @deselect="handleItemDeselected"
-          />
+          <!-- Virtualizer total height container -->
+          <div
+            :style="{
+              height: `${virtualizer.getTotalSize()}px`,
+              width: '100%',
+              position: 'relative',
+            }"
+          >
+            <!-- Each virtual row -->
+            <div
+              v-for="virtualRow in virtualizer.getVirtualItems()"
+              :key="virtualRow.key as PropertyKey"
+              :style="{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                height: `${virtualRow.size}px`,
+                transform: `translateY(${virtualRow.start}px)`,
+              }"
+            >
+              <div
+                class="grid grid-cols-[repeat(auto-fill,minmax(250px,250px))] justify-center gap-5 w-full"
+              >
+                <GameCard
+                  v-for="item in getRowItems(virtualRow.index)"
+                  :key="item.rom.id"
+                  :rom="item.rom"
+                  :index="item.flatIndex"
+                  :selected="!inAlphabet && item.flatIndex === selectedIndex"
+                  :loaded="!!loadedMap[item.rom.id]"
+                  registry="gamesList"
+                  @click="selectAndOpen(item.flatIndex, item.rom)"
+                  @focus="mouseSelect(item.flatIndex)"
+                  @loaded="markLoaded(item.rom.id)"
+                  @select="handleItemSelected"
+                  @deselect="handleItemDeselected"
+                />
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -554,13 +681,5 @@ function handleItemDeselected() {
 <style scoped>
 button:focus {
   outline: none;
-}
-
-/* Virtual rendering: browser skips paint/layout for off-screen cards.
-   Each grid child gets content-visibility so the browser only renders
-   cards near the viewport. DOM stays complete for spatial navigation. */
-.console-game-grid > :deep(*) {
-  content-visibility: auto;
-  contain-intrinsic-size: 250px 370px;
 }
 </style>
