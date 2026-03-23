@@ -52,5 +52,5 @@ const { calculatedWidth } = calculateMainLayoutWidth();
     :show-platforms-filter="showPlatformsFilter"
     :show-search-bar="showSearchBar"
   />
-  <CharIndexBar />
+  <!-- CharIndexBar removed: incompatible with virtual scrolling -->
 </template>

@@ -61,10 +61,9 @@ const rowCount = computed(() =>
   Math.ceil(filteredRoms.value.length / columns.value),
 );
 
-const ROW_HEIGHT = 280;
 const virtualizer = useWindowVirtualizer({
   get count() { return rowCount.value; },
-  estimateSize: () => ROW_HEIGHT,
+  estimateSize: () => 200,
   overscan: 5,
 });
 
