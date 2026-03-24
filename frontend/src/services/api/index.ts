@@ -63,21 +63,12 @@ api.interceptors.response.use(
   },
   async (error) => {
     if (error.response?.status === 403) {
-      // Clear cookies and redirect to login page
+      // Session expired — redirect to Google OIDC to re-authenticate
       Cookies.remove("romm_session");
-
-      // Refetch CSRF cookie
       await refetchCSRFToken();
 
-      const pathname = window.location.pathname;
-      const params = new URLSearchParams(window.location.search);
-
-      router.push({
-        name: ROUTES.LOGIN,
-        query: {
-          next: params.get("next") ?? (pathname !== "/login" ? pathname : "/"),
-        },
-      });
+      // Redirect directly to OIDC login instead of showing login page
+      window.location.href = "/api/login/openid";
     }
     return Promise.reject(error);
   },
