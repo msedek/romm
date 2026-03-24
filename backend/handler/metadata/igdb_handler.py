@@ -430,6 +430,13 @@ class IGDBHandler(MetadataHandler):
     def __init__(self) -> None:
         self.igdb_service = IGDBService(twitch_auth=TwitchAuth())
         self.pagination_limit = 200
+        # Per-scan cache: (search_term, platform_igdb_id) -> Game | None
+        # Avoids duplicate API calls for ROMs that normalize to the same search term
+        self._search_cache: dict[tuple[str, int], Game | None] = {}
+
+    def clear_search_cache(self) -> None:
+        """Clear the per-scan search cache. Call at the start of each scan."""
+        self._search_cache.clear()
 
     @classmethod
     def is_enabled(cls) -> bool:
@@ -443,33 +450,36 @@ class IGDBHandler(MetadataHandler):
             return int(match.group(1))
         return None
 
-    async def _search_rom(
-        self, search_term: str, platform_igdb_id: int, with_game_type: bool = False
+    # Game types considered "primary" (main games, ports, remakes, etc.)
+    _MAIN_GAME_TYPES = frozenset(
+        (
+            GameType.EXPANDED_GAME,
+            GameType.MAIN_GAME,
+            GameType.PORT,
+            GameType.REMAKE,
+            GameType.REMASTER,
+        )
+    )
+
+    async def _search_games(
+        self,
+        search_term: str,
+        platform_igdb_id: int,
     ) -> Game | None:
-        if not platform_igdb_id:
-            return None
+        """Search the IGDB games endpoint and return the best match.
 
-        if with_game_type:
-            categories = (
-                GameType.EXPANDED_GAME,
-                GameType.MAIN_GAME,
-                GameType.PORT,
-                GameType.REMAKE,
-                GameType.REMASTER,
-            )
-            game_type_filter = f"& game_type=({','.join(map(str, categories))})"
-        else:
-            game_type_filter = ""
-
-        log.debug("Searching in games endpoint with game_type %s", game_type_filter)
-        where_filter = f"platforms=[{platform_igdb_id}] {game_type_filter}"
+        Searches without game_type filter (single API call) and applies game_type
+        preference locally: main games are preferred over DLCs/bundles/mods.
+        """
+        where_filter = f"platforms=[{platform_igdb_id}]"
 
         # Special case for ScummVM games
         # https://github.com/rommapp/romm/issues/2424
         scummvm_platform = self.get_platform(UPS.SCUMMVM)
         if scummvm_platform["igdb_id"] == platform_igdb_id:
-            where_filter = f"keywords=[{platform_igdb_id}] {game_type_filter}"
+            where_filter = f"keywords=[{platform_igdb_id}]"
 
+        log.debug("Searching in games endpoint with filter: %s", where_filter)
         roms = await self.igdb_service.list_games(
             search_term=search_term,
             fields=GAMES_FIELDS,
@@ -477,25 +487,50 @@ class IGDBHandler(MetadataHandler):
             limit=self.pagination_limit,
         )
 
-        games_by_name: dict[str, Game] = {}
+        # Split results by game type: prefer main games over DLC/bundles/mods
+        main_games_by_name: dict[str, Game] = {}
+        other_games_by_name: dict[str, Game] = {}
         for game in roms:
             game_name = game.get("name", "")
-            if (
-                game_name not in games_by_name
-                or game["id"] < games_by_name[game_name]["id"]
-            ):
-                games_by_name[game_name] = game
+            if not game_name:
+                continue
+            game_type = game.get("game_type")
+            if game_type is None or game_type in self._MAIN_GAME_TYPES:
+                if (
+                    game_name not in main_games_by_name
+                    or game["id"] < main_games_by_name[game_name]["id"]
+                ):
+                    main_games_by_name[game_name] = game
+            else:
+                if game_name not in other_games_by_name:
+                    other_games_by_name[game_name] = game
 
+        # Try main game types first
         best_match, best_score = self.find_best_match(
-            search_term,
-            list(games_by_name.keys()),
+            search_term, list(main_games_by_name.keys())
         )
         if best_match:
             log.debug(
                 f"Found match for '{search_term}' -> '{best_match}' (score: {best_score:.3f})"
             )
-            return games_by_name[best_match]
+            return main_games_by_name[best_match]
 
+        # Fall back to other game types (DLC, bundle, mod, etc.)
+        best_match, best_score = self.find_best_match(
+            search_term, list(other_games_by_name.keys())
+        )
+        if best_match:
+            log.debug(
+                f"Found match for '{search_term}' -> '{best_match}' (score: {best_score:.3f}, non-main type)"
+            )
+            return other_games_by_name[best_match]
+
+        return None
+
+    async def _expanded_search(
+        self, search_term: str, platform_igdb_id: int
+    ) -> Game | None:
+        """Fallback search using the IGDB search endpoint with name/alternative_name matching."""
         log.debug("Searching expanded in search endpoint")
         roms_expanded = await self.igdb_service.search(
             fields=SEARCH_FIELDS,
@@ -503,36 +538,65 @@ class IGDBHandler(MetadataHandler):
             limit=self.pagination_limit,
         )
 
-        if roms_expanded:
+        if not roms_expanded:
+            return None
+
+        log.debug(
+            "Searching expanded in games endpoint for expanded game %s",
+            roms_expanded[0]["game"],
+        )
+        extra_roms = await self.igdb_service.list_games(
+            fields=GAMES_FIELDS,
+            where=f"id={roms_expanded[0]['game']['id']}",
+            limit=self.pagination_limit,
+        )
+
+        extra_games_by_name: dict[str, Game] = {}
+        for game in extra_roms:
+            game_name = game.get("name", "")
+            if game_name not in extra_games_by_name:
+                extra_games_by_name[game_name] = game
+
+        best_match, best_score = self.find_best_match(
+            search_term,
+            list(extra_games_by_name.keys()),
+        )
+        if best_match:
             log.debug(
-                "Searching expanded in games endpoint for expanded game %s",
-                roms_expanded[0]["game"],
+                f"Found match for '{search_term}' -> '{best_match}' (score: {best_score:.3f})"
             )
-            extra_roms = await self.igdb_service.list_games(
-                fields=GAMES_FIELDS,
-                where=f"id={roms_expanded[0]['game']['id']}",
-                limit=self.pagination_limit,
-            )
-
-            extra_games_by_name: dict[str, Game] = {}
-            for game in extra_roms:
-                game_name = game.get("name", "")
-                if game_name not in extra_games_by_name:
-                    extra_games_by_name[game_name] = game
-
-            best_match, best_score = self.find_best_match(
-                search_term,
-                list(extra_games_by_name.keys()),
-            )
-            if best_match:
-                log.debug(
-                    f"Found match for '{search_term}' -> '{best_match}' (score: {best_score:.3f})"
-                )
-                return extra_games_by_name[best_match]
-
-            roms.extend(extra_roms)
+            return extra_games_by_name[best_match]
 
         return None
+
+    async def _search_rom(self, search_term: str, platform_igdb_id: int) -> Game | None:
+        """Search IGDB for a ROM, trying progressively broader queries.
+
+        Order: search cache -> games endpoint (with local game_type preference)
+        -> expanded search. Single API call for the main search with local
+        game_type filtering replaces the old two-call pattern.
+        """
+        if not platform_igdb_id:
+            return None
+
+        # Check dedup cache: only positive matches are cached to avoid
+        # memoizing transient API failures as "no match"
+        cache_key = (search_term, platform_igdb_id)
+        if cache_key in self._search_cache:
+            log.debug(f"Search cache hit for '{search_term}'")
+            return self._search_cache[cache_key]
+
+        # Step 1: Single search with local game_type preference (1 API call)
+        result = await self._search_games(search_term, platform_igdb_id)
+        if result:
+            self._search_cache[cache_key] = result
+            return result
+
+        # Step 2: Expanded search via search endpoint (1-2 API calls)
+        result = await self._expanded_search(search_term, platform_igdb_id)
+        if result:
+            self._search_cache[cache_key] = result
+        return result
 
     async def heartbeat(self) -> bool:
         if not self.is_enabled():
@@ -677,11 +741,8 @@ class IGDBHandler(MetadataHandler):
 
         search_term = self.normalize_search_term(search_term)
 
-        log.debug("Searching for %s on IGDB with game_type", search_term)
-        rom = await self._search_rom(search_term, platform_igdb_id, with_game_type=True)
-        if not rom:
-            log.debug("Searching for %s on IGDB without game_type", search_term)
-            rom = await self._search_rom(search_term, platform_igdb_id)
+        log.debug("Searching for %s on IGDB", search_term)
+        rom = await self._search_rom(search_term, platform_igdb_id)
 
         # IGDB search is fuzzy so no need to split the search term by special characters
         if not rom:
@@ -849,6 +910,7 @@ GAMES_FIELDS = (
     "id",
     "name",
     "slug",
+    "game_type",
     "summary",
     "total_rating",
     "aggregated_rating",

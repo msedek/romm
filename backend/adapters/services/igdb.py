@@ -48,6 +48,43 @@ async def auth_middleware(
     return await handler(req)
 
 
+class IGDBRateLimiter:
+    """Token bucket rate limiter for IGDB API (4 requests/second)."""
+
+    def __init__(self, rate: float = 4.0) -> None:
+        self._rate = rate
+        self._lock = asyncio.Lock()
+        self._tokens = rate
+        self._last_refill = asyncio.get_event_loop().time()
+
+    async def acquire(self) -> None:
+        while True:
+            async with self._lock:
+                now = asyncio.get_event_loop().time()
+                elapsed = now - self._last_refill
+                self._tokens = min(self._rate, self._tokens + elapsed * self._rate)
+                self._last_refill = now
+
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    return
+                wait_time = (1.0 - self._tokens) / self._rate
+
+            # Sleep OUTSIDE the lock so other coroutines can proceed
+            await asyncio.sleep(wait_time)
+
+
+# Shared rate limiter instance across all IGDBService instances
+_igdb_rate_limiter = None
+
+
+def _get_rate_limiter() -> IGDBRateLimiter:
+    global _igdb_rate_limiter
+    if _igdb_rate_limiter is None:
+        _igdb_rate_limiter = IGDBRateLimiter()
+    return _igdb_rate_limiter
+
+
 class IGDBService:
     """Service to interact with the IGDB API.
 
@@ -70,6 +107,7 @@ class IGDBService:
         fields: Sequence[str] | None = None,
         where: str | None = None,
         limit: int | None = None,
+        offset: int | None = None,
         request_timeout: int = 120,
     ) -> list:
         aiohttp_session = ctx_aiohttp_session.get()
@@ -83,6 +121,8 @@ class IGDBService:
             content += f"where {where}; "
         if limit is not None:
             content += f"limit {limit}; "
+        if offset is not None:
+            content += f"offset {offset}; "
         content = content.strip()
 
         log.debug(
@@ -91,6 +131,9 @@ class IGDBService:
             content,
             request_timeout,
         )
+
+        # Rate limit to avoid 429 responses (IGDB allows 4 req/s)
+        await _get_rate_limiter().acquire()
 
         try:
             res = await aiohttp_session.post(
@@ -133,7 +176,8 @@ class IGDBService:
             log.error("Error decoding JSON response from IGDB: %s", exc)
             return []
 
-        # Retry the request once if it times out
+        # Retry the request once
+        await _get_rate_limiter().acquire()
         try:
             log.debug(
                 "API request: URL=%s, Content=%s, Timeout=%s",
@@ -170,6 +214,7 @@ class IGDBService:
         fields: Sequence[str] | None = None,
         where: str | None = None,
         limit: int | None = None,
+        offset: int | None = None,
     ) -> list[Game]:
         """Retrieve games.
 
@@ -182,6 +227,7 @@ class IGDBService:
             fields=fields,
             where=where,
             limit=limit,
+            offset=offset,
         )
 
     async def search(
