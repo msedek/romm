@@ -66,6 +66,11 @@ class CSRFMiddleware:
             await self.app(scope, receive, send)
             return None
 
+        # Skip CSRF check if user has a valid OIDC session
+        if hasattr(request, "session") and request.session.get("iss") == "romm:auth":
+            await self.app(scope, receive, send)
+            return None
+
         csrf_cookie = request.cookies.get(self.cookie_name)
 
         if self._url_is_required(request.url) or (
