@@ -576,7 +576,9 @@ async def _identify_platform(
         f"{hl('Phase 1', color=BLUE)}: Discovering {hl(str(len(fs_roms)))} ROMs for {hl(platform.custom_name or platform.name, color=BLUE)}"
     )
     await scan_stats.update(socket_manager=socket_manager, scan_phase="discovering")
-    discover_semaphore = asyncio.Semaphore(SCAN_WORKERS)
+    # Discovery is I/O-bound (file hashing + DB writes), not API-bound.
+    # Use higher concurrency than enrichment for faster discovery.
+    discover_semaphore = asyncio.Semaphore(SCAN_WORKERS * 3)
     roms_to_enrich: list[tuple[Rom, FSRom, bool]] = []
 
     async def discover_with_semaphore(
